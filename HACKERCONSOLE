@@ -1,0 +1,1966 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <Keypad.h>
+#include <time.h>
+
+#define TFT_CS   15
+#define TFT_RST  4
+#define TFT_DC   2
+
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+const byte ROWS = 4, COLS = 4;
+char hexaKeys[ROWS][COLS] = {
+  {'*','7','4','1'},
+  {'0','8','5','2'},
+  {'#','9','6','3'},
+  {'D','C','B','A'}
+};
+byte rPins[ROWS] = {13, 12, 14, 27};
+byte cPins[COLS] = {26, 25, 33, 32};
+Keypad kp = Keypad(makeKeymap(hexaKeys), rPins, cPins, ROWS, COLS);
+
+const char* apSSID = "HACKER_CONSOLE";
+const char* apPass = "12345678";
+WebServer server(80);
+
+#define BLACK  0x0000
+#define GREEN  0x07E0
+#define DGREEN 0x03E0
+#define RED    0xF800
+#define WHITE  0xFFFF
+#define YEL    0xFFE0
+#define CYN    0x07FF
+#define MAG    0xF81F
+#define ORANGE 0xFD20
+#define GREY   0x8410
+#define DGOLD  0xC500
+#define LGOLD  0xFDA0
+#define SKY    0x0220
+#define DSKY   0x0120
+
+uint16_t COL_HEADER = 0x07E0;
+uint16_t COL_TEXT   = 0xFFFF;
+uint16_t COL_DIM    = 0x8410;
+uint16_t COL_BANNER = 0xFFE0;
+
+#define THEME_BLACK 0
+#define THEME_BLUE  1
+#define THEME_RED   2
+int currentTheme = THEME_BLACK;
+
+void setTheme(int theme) {
+  currentTheme = theme;
+  switch (theme) {
+    case THEME_BLACK:
+      COL_HEADER = 0x07E0; COL_TEXT = 0xFFFF; COL_DIM = 0x8410; COL_BANNER = 0xFFE0; break;
+    case THEME_BLUE:
+      COL_HEADER = 0x1F7C; COL_TEXT = 0xFFFF; COL_DIM = 0x94B2; COL_BANNER = 0x1FFF; break;
+    case THEME_RED:
+      COL_HEADER = 0xF81F; COL_TEXT = 0xFFFF; COL_DIM = 0xC818; COL_BANNER = 0xFBE0; break;
+  }
+}
+
+int md = 0;
+int sel = 0;
+int menuPage = 0;
+char key = 0;
+bool clearOnce = true;
+
+const char* LOCK_PIN = "1987";
+String pinInput = "";
+bool pinWrong = false;
+unsigned long wrongTimer = 0;
+unsigned long lockAnimTimer = 0;
+int lockAnimPhase = 0;
+
+String lastIP = "";
+String capturedIPs[10];
+int captureCount = 0;
+int captureScroll = 0;
+bool bannerActive = false;
+unsigned long ipBannerUntil = 0;
+#define BANNER_MS 3000
+String bannerText = "";
+
+struct Net { String ssid; int rssi; float angle; int radius; };
+Net nets[20];
+int netCount = 0;
+float sweepAngle = 0;
+unsigned long lastSweep = 0, lastScan = 0;
+bool apActive = false;
+int prevX = -1, prevY = -1;
+
+#define NUM_APPS 10
+
+String recvMsgs[20];
+int recvCount = 0;
+int recvScroll = 0;
+
+int matrixCols[20];
+int matrixSpeed[20];
+unsigned long matrixLast = 0;
+
+bool timeSynced = false;
+
+#define IMG_W 40
+#define IMG_H 32
+#define IMG_PIX (IMG_W * IMG_H)
+uint16_t imgBuf[5][IMG_PIX];
+int imgCount = 0;
+int galleryIdx = 0;
+
+struct LockPin { float displayY; float targetY; bool solved; int order; };
+LockPin lpins[5];
+int pickSlot = 0;
+float pickDisplayX = 0;
+int nextOrder = 0;
+bool lockDone = false;
+bool lockFail = false;
+unsigned long failTimer = 0;
+unsigned long doneTimer = 0;
+int lockLevel = 1;
+int lockSolvedCount = 0;
+int liftSlot = -1;
+float liftProgress = 0;
+bool liftResult = false;
+
+#define LOCK_X 12
+#define LOCK_Y 18
+#define LOCK_W 136
+#define LOCK_H 92
+#define LPIN_GAP 4
+#define LPIN_W ((LOCK_W - 6 * LPIN_GAP) / 5)
+#define LPIN_TOP_Y (LOCK_Y + 8)
+#define LPIN_BOT_Y (LPIN_TOP_Y + 60)
+#define LPIN_H 20
+
+#define CODE_MAX 6
+int codeDigits[CODE_MAX];
+int codeLen = 3;
+int crackLevel = 1;
+int crackPos = 0;
+int tryDigit = 0;
+bool crackSolved[CODE_MAX];
+bool crackWrong = false;
+bool crackDone = false;
+unsigned long crackWrongTimer = 0;
+unsigned long crackDoneTimer = 0;
+int crackAttempts = 0;
+float crackBoltExtend = 0;
+float crackBoltTarget = 0;
+
+#define CRACK_LOCK_X 30
+#define CRACK_LOCK_Y 20
+#define CRACK_LOCK_W 100
+#define CRACK_LOCK_H 56
+#define CRACK_CELL_W 14
+#define CRACK_CELL_GAP 4
+#define CRACK_BOLT_THICK 10
+#define CRACK_BOLT_MAX_EXT 24
+
+#define SNAKE_CELL 8
+#define SNAKE_GRID_W 20
+#define SNAKE_GRID_H 13
+int snakeX[100], snakeY[100];
+int snakeLen = 3;
+int snakeDir = 0;
+int foodX, foodY;
+int snakeScore = 0;
+bool snakeDead = false;
+unsigned long snakeLastMove = 0;
+#define SNAKE_SPEED 180
+
+#define REACT_WAIT 0
+#define REACT_GO 1
+#define REACT_RESULT 2
+#define REACT_DEAD 3
+int reactState = REACT_WAIT;
+unsigned long reactStartTime = 0;
+unsigned long reactDelay = 0;
+unsigned long reactTime = 0;
+int reactBest = 999;
+
+int diceVal[2] = {1, 1};
+int diceHigh = 0;
+bool diceRolling = false;
+unsigned long diceRollTimer = 0;
+int diceRollCount = 0;
+
+#define SIMON_MAX 20
+int simonSeq[SIMON_MAX];
+int simonLen = 0;
+int simonInputPos = 0;
+int simonShowPos = 0;
+unsigned long simonShowTimer = 0;
+bool simonShowing = false;
+bool simonDead = false;
+int simonScore = 0;
+int simonHighScore = 0;
+int simonBtnKeys[4] = {'1', '3', '7', '9'};
+uint16_t simonBright[4] = {GREEN, RED, YEL, CYN};
+uint16_t simonDim[4]    = {DGREEN, 0x4000, 0x4208, 0x021F};
+int simonBtnPos[4][2] = {{20,20},{84,20},{20,68},{84,68}};
+
+String calcExpr = "";
+double calcResult = 0;
+bool calcShowResult = false;
+bool calcError = false;
+int calcCurR = 3, calcCurC = 1;
+
+const char* calcBtns[4][4] = {
+  {"7","8","9","/"},
+  {"4","5","6","x"},
+  {"1","2","3","-"},
+  {".","0","=","+"}
+};
+
+String noteText = "";
+int notePage = 0;
+int noteCurR = 0, noteCurC = 0;
+
+const char* notePages[5][4][4] = {
+  {{"A","B","C","D"},{"E","F","G","H"},{"I","J","K","L"},{"M","N","O","P"}},
+  {{"Q","R","S","T"},{"U","V","W","X"},{"Y","Z","a","b"},{"c","d","e","f"}},
+  {{"g","h","i","j"},{"k","l","m","n"},{"o","p","q","r"},{"s","t","u","v"}},
+  {{"w","x","y","z"},{"0","1","2","3"},{"4","5","6","7"},{"8","9","."," "}},
+  {{",","!","?","-"},{":",";","@","#"},{"$","%","&","+"},{"(",")","/","="}}
+};
+
+#define CALC_BTN_W 37
+#define CALC_BTN_H 20
+#define CALC_BTN_GAP 2
+#define CALC_BTN_X0 2
+#define CALC_BTN_Y0 36
+
+float fbBirdY = 55;
+float fbBirdVY = 0;
+#define FB_GRAVITY 0.32
+#define FB_FLAP -4.0
+#define FB_BIRD_X 30
+#define FB_PIPE_W 16
+#define FB_PIPE_GAP 38
+#define FB_GROUND_Y 114
+#define FB_TOP_Y 14
+int fbPipesX[4];
+int fbPipesGapY[4];
+bool fbPipeScored[4];
+int fbScore = 0;
+int fbHighScore = 0;
+bool fbDead = false;
+bool fbStarted = false;
+unsigned long fbLastUpdate = 0;
+int fbPipeSpeed = 2;
+int fbWingPhase = 0;
+unsigned long fbWingTimer = 0;
+int fbStarX[8];
+int fbStarY[8];
+int fbBgOffset = 0;
+
+String getTimeStr() {
+  time_t now = time(nullptr);
+  if (now < 1700000000) {
+    unsigned long sec = millis() / 1000;
+    int h = (sec / 3600) % 100;
+    int m = (sec / 60) % 60;
+    int s = sec % 60;
+    char buf[9];
+    sprintf(buf, "%02d:%02d:%02d", h, m, s);
+    return String(buf);
+  }
+  struct tm* t = localtime(&now);
+  char buf[9];
+  sprintf(buf, "%02d:%02d:%02d", t->tm_hour, t->tm_min, t->tm_sec);
+  return String(buf);
+}
+
+void espTone(int f, int d) {
+  ledcSetup(0, f, 10);
+  ledcAttachPin(16, 0);
+  ledcWrite(0, 512);
+  delay(d);
+  ledcWrite(0, 0);
+}
+void click() { espTone(2500, 12); }
+
+void showIPBanner() {
+  bannerText = "IP: " + lastIP;
+  bannerActive = true;
+  ipBannerUntil = millis() + BANNER_MS;
+}
+void showTextBanner(String text) {
+  bannerText = text;
+  bannerActive = true;
+  ipBannerUntil = millis() + BANNER_MS;
+}
+
+void drawImage(int idx) {
+  if (idx < 0 || idx >= 5) return;
+  for (int y = 0; y < IMG_H; y++) {
+    for (int x = 0; x < IMG_W; x++) {
+      uint16_t c = imgBuf[idx][y * IMG_W + x];
+      tft.fillRect(x * 4, y * 4, 4, 4, c);
+    }
+  }
+}
+
+void showGalleryLabel() {
+  int total = imgCount;
+  if (total > 5) total = 5;
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  tft.setCursor(4, 2);
+  tft.print("IMG "); tft.print(galleryIdx + 1); tft.print("/"); tft.print(total);
+  tft.setCursor(110, 2); tft.print(getTimeStr());
+  tft.setTextColor(COL_DIM); tft.setCursor(60, 118);
+  tft.print("2/8 - nav");
+}
+
+void drawLockScreen() {
+  tft.fillScreen(BLACK);
+  tft.drawFastHLine(0, 0, 20, COL_DIM);
+  tft.drawFastVLine(0, 0, 20, COL_DIM);
+  tft.drawFastHLine(140, 0, 20, COL_DIM);
+  tft.drawFastVLine(159, 0, 20, COL_DIM);
+  tft.drawFastHLine(0, 127, 20, COL_DIM);
+  tft.drawFastVLine(0, 108, 20, COL_DIM);
+  tft.drawFastHLine(140, 127, 20, COL_DIM);
+  tft.drawFastVLine(159, 108, 20, COL_DIM);
+  tft.drawFastHLine(20, 10, 120, COL_HEADER);
+  tft.setTextColor(COL_HEADER); tft.setTextSize(1);
+  tft.setCursor(50, 14); tft.print("HACKER CONSOLE");
+  int cx = 80, cy = 44;
+  for (int r = 18; r <= 22; r += 2) tft.drawCircle(cx, cy, r, COL_DIM);
+  tft.drawCircle(cx, cy - 4, 7, COL_HEADER);
+  tft.drawCircle(cx, cy - 4, 6, COL_HEADER);
+  tft.fillRect(cx - 10, cy - 5, 20, 4, BLACK);
+  tft.fillRoundRect(cx - 12, cy - 2, 24, 18, 3, COL_HEADER);
+  tft.drawRoundRect(cx - 12, cy - 2, 24, 18, 3, COL_TEXT);
+  tft.fillCircle(cx, cy + 5, 2, BLACK);
+  tft.fillRect(cx - 1, cy + 5, 2, 6, BLACK);
+  if (lockAnimPhase == 0) tft.drawCircle(cx, cy, 24, COL_HEADER);
+  else if (lockAnimPhase == 1) tft.drawCircle(cx, cy, 25, COL_TEXT);
+  tft.drawFastHLine(30, 72, 100, COL_DIM);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  tft.setCursor(52, 78); tft.print("ENTER PIN");
+  for (int i = 0; i < 4; i++) {
+    int dx = 50 + i * 20, dy = 95;
+    if (i < pinInput.length()) {
+      tft.fillCircle(dx, dy, 4, COL_HEADER);
+      tft.drawCircle(dx, dy, 5, COL_TEXT);
+    } else {
+      tft.drawCircle(dx, dy, 4, COL_DIM);
+    }
+  }
+  if (pinWrong) {
+    tft.fillRoundRect(28, 86, 104, 22, 4, RED);
+    tft.drawRoundRect(28, 86, 104, 22, 4, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(42, 91); tft.print("WRONG!");
+  }
+  tft.drawFastHLine(30, 108, 100, COL_DIM);
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(18, 114);
+  tft.print("[0-9] PIN  [*] clr  [#] ok");
+  tft.setTextColor(COL_HEADER); tft.setTextSize(1);
+  String t = getTimeStr();
+  int tw = t.length() * 6;
+  tft.setCursor(80 - tw / 2, 2);
+  tft.print(t);
+}
+
+void drawAppIcon(int idx, int ix, int iy, bool selected) {
+  int cx = ix + 12, cy = iy + 12;
+  uint16_t bg, fg;
+  switch (idx) {
+    case 0: bg = 0x0220; fg = GREEN;  break;
+    case 1: bg = 0x021F; fg = CYN;    break;
+    case 2: bg = 0x4208; fg = YEL;    break;
+    case 3: bg = 0x4000; fg = RED;    break;
+    case 4: bg = 0x0220; fg = GREEN;  break;
+    case 5: bg = 0x7800; fg = MAG;    break;
+    case 6: bg = 0x021F; fg = CYN;    break;
+    case 7: bg = 0x0120; fg = GREEN;  break;
+    case 8: bg = 0x6200; fg = ORANGE; break;
+    case 9: bg = 0x4220; fg = YEL;    break;
+    case 10: bg = 0x3220; fg = LGOLD; break;
+    case 11: bg = 0x3000; fg = ORANGE; break;
+    case 12: bg = 0x0220; fg = GREEN;  break;
+    case 13: bg = 0x4220; fg = YEL;    break;
+    case 14: bg = 0x4210; fg = WHITE;  break;
+    case 15: bg = 0x0210; fg = CYN;    break;
+    case 16: bg = 0x2104; fg = CYN;    break;
+    case 17: bg = 0x0220; fg = YEL;    break;
+    case 18: bg = 0x0220; fg = GREEN;  break;
+    default: bg = GREY;   fg = WHITE;
+  }
+  if (selected) tft.fillRoundRect(ix - 3, iy - 3, 30, 30, 5, fg);
+  tft.fillRoundRect(ix, iy, 24, 24, 3, bg);
+  tft.drawRoundRect(ix, iy, 24, 24, 3, fg);
+  tft.setTextColor(fg);
+  switch (idx) {
+    case 0:
+      tft.drawCircle(cx, cy, 8, fg);
+      tft.drawLine(cx, cy, cx + 6, cy - 5, fg);
+      tft.fillCircle(cx, cy, 1, fg);
+      break;
+    case 1: tft.setTextSize(2); tft.setCursor(cx - 6, cy - 8); tft.print("W"); break;
+    case 2:
+      tft.drawCircle(cx - 2, cy - 1, 6, fg);
+      tft.drawLine(cx + 3, cy + 4, cx + 7, cy + 8, fg);
+      break;
+    case 3: tft.setTextSize(2); tft.setCursor(cx - 6, cy - 8); tft.print("H"); break;
+    case 4: tft.setTextSize(2); tft.setCursor(cx - 6, cy - 8); tft.print(">"); break;
+    case 5: tft.setTextSize(1); tft.setCursor(cx - 6, cy - 4); tft.print("IP"); break;
+    case 6: tft.setTextSize(2); tft.setCursor(cx - 6, cy - 8); tft.print("#"); break;
+    case 7: tft.setTextSize(1); tft.setCursor(cx - 6, cy - 4); tft.print("01"); break;
+    case 8:
+      tft.drawRect(cx - 8, cy - 6, 16, 12, fg);
+      tft.fillRect(cx - 6, cy - 4, 12, 2, fg);
+      tft.fillCircle(cx - 3, cy + 2, 2, fg);
+      break;
+    case 9: tft.setTextSize(2); tft.setCursor(cx - 6, cy - 8); tft.print("T"); break;
+    case 10:
+      tft.fillCircle(cx, cy - 4, 5, fg);
+      tft.fillRect(cx - 5, cy - 1, 10, 10, fg);
+      tft.fillRect(cx - 2, cy + 2, 4, 6, BLACK);
+      break;
+    case 11:
+      tft.drawCircle(cx, cy, 8, fg);
+      tft.fillCircle(cx, cy, 6, bg);
+      tft.drawFastVLine(cx, cy - 5, 4, fg);
+      tft.fillCircle(cx, cy, 1, fg);
+      tft.drawFastHLine(cx - 7, cy + 7, 14, fg);
+      break;
+    case 12:
+      tft.drawFastHLine(cx - 7, cy - 5, 6, fg);
+      tft.drawFastVLine(cx - 1, cy - 5, 6, fg);
+      tft.drawFastHLine(cx - 1, cy + 1, 8, fg);
+      tft.fillCircle(cx + 7, cy + 1, 1, fg);
+      break;
+    case 13:
+      tft.fillTriangle(cx - 1, cy - 7, cx + 5, cy - 7, cx, cy - 1, fg);
+      tft.fillTriangle(cx - 4, cy + 1, cx + 2, cy + 1, cx - 2, cy + 7, fg);
+      break;
+    case 14:
+      tft.fillCircle(cx - 4, cy - 4, 2, fg);
+      tft.fillCircle(cx + 4, cy + 4, 2, fg);
+      tft.fillCircle(cx, cy, 2, fg);
+      break;
+    case 15:
+      tft.fillRect(cx - 7, cy - 7, 6, 6, RED);
+      tft.fillRect(cx + 1, cy - 7, 6, 6, GREEN);
+      tft.fillRect(cx - 7, cy + 1, 6, 6, YEL);
+      tft.fillRect(cx + 1, cy + 1, 6, 6, CYN);
+      break;
+    case 16:
+      tft.drawRect(cx - 7, cy - 8, 14, 16, fg);
+      tft.fillRect(cx - 5, cy - 6, 10, 3, fg);
+      tft.fillCircle(cx - 3, cy + 1, 1, fg);
+      tft.fillCircle(cx + 1, cy + 1, 1, fg);
+      tft.fillCircle(cx + 5, cy + 1, 1, fg);
+      tft.fillCircle(cx - 3, cy + 5, 1, fg);
+      tft.fillCircle(cx + 1, cy + 5, 1, fg);
+      tft.fillCircle(cx + 5, cy + 5, 1, fg);
+      break;
+    case 17:
+      tft.fillCircle(cx, cy, 6, YEL);
+      tft.fillTriangle(cx + 4, cy, cx + 8, cy - 2, cx + 8, cy + 2, RED);
+      tft.fillCircle(cx + 2, cy - 2, 1, BLACK);
+      tft.fillCircle(cx - 3, cy + 2, 3, ORANGE);
+      break;
+    case 18:
+      tft.fillRect(cx - 6, cy - 8, 12, 16, fg);
+      tft.drawRect(cx - 6, cy - 8, 12, 16, WHITE);
+      tft.drawFastHLine(cx - 3, cy - 4, 6, WHITE);
+      tft.drawFastHLine(cx - 3, cy - 1, 6, WHITE);
+      tft.drawFastHLine(cx - 3, cy + 2, 6, WHITE);
+      tft.drawFastHLine(cx - 3, cy + 5, 4, WHITE);
+      break;
+  }
+}
+
+void handleRoot() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HACKER CONSOLE</title>
+<style>
+body{font-family:Arial;max-width:500px;margin:20px auto;padding:0 12px;background:#0a0a0a;color:#0f0;}
+h1{color:#0f0;text-align:center;}
+label{display:block;margin:10px 0 4px;}
+input[type=text]{width:100%;padding:12px;font-size:16px;background:#111;color:#0f0;border:1px solid #0f0;border-radius:6px;box-sizing:border-box;}
+.btn{display:block;width:100%;padding:14px;margin:10px 0;font-size:16px;color:#000;border:none;border-radius:6px;cursor:pointer;text-align:center;text-decoration:none;}
+.g{background:#0f0;} .g:hover{background:#6f6;}
+.sync{background:#0ff;} .sync:hover{background:#6ff;}
+.draw{background:#f0f;} .draw:hover{background:#f6f;}
+.colors{margin:10px 0;}
+.colors label{margin-bottom:6px;}
+.swatches{display:flex;flex-wrap:wrap;gap:6px;}
+.sw{width:36px;height:36px;border:2px solid #333;border-radius:6px;cursor:pointer;}
+.sw:hover{border-color:#fff;}
+.sw.active{border-color:#fff;box-shadow:0 0 10px rgba(255,255,255,0.5);}
+</style></head>
+<body><h1>HACKER CONSOLE</h1>
+<form action="/send" method="POST">
+  <label>Message:</label>
+  <input type="text" name="msg" placeholder="type here..." maxlength="50" autofocus>
+  <button class="btn g" type="submit">Send to Console</button>
+</form>
+<a href="/contact" class="btn g">Contact</a>
+<a href="/draw" class="btn draw">Draw Image</a>
+<button class="btn sync" onclick="syncTime()">Sync Time</button>
+<div class="colors">
+  <label>Banner Color:</label>
+  <div class="swatches" id="sw"></div>
+</div>
+<script>
+function syncTime(){fetch('/settime?t='+Math.floor(Date.now()/1000)).then(()=>{});}
+var cols=[['FFE0','Yellow'],['07E0','Green'],['07FF','Cyan'],['F800','Red'],['F81F','Magenta'],['FD20','Orange'],['FFFF','White'],['8410','Grey']];
+var sw=document.getElementById('sw');
+cols.forEach(function(c){var b=document.createElement('div');b.className='sw';b.style.background='#'+c[0];b.title=c[1];b.onclick=function(){setActive(this);fetch('/setcolor?c='+c[0]);};sw.appendChild(b);});
+function setActive(el){document.querySelectorAll('.sw').forEach(s=>s.classList.remove('active'));el.classList.add('active');}
+syncTime();
+</script>
+</body></html>
+  )rawliteral";
+  server.send(200, "text/html", html);
+}
+
+void handleDraw() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>DRAW</title>
+<style>
+body{background:#0a0a0a;color:#0f0;font-family:monospace;margin:0;padding:8px;touch-action:none}
+h3{text-align:center;margin:4px 0;}
+canvas{display:block;margin:4px auto;border:2px solid #0f0;touch-action:none;image-rendering:pixelated;background:#000}
+.pal{display:flex;flex-wrap:wrap;justify-content:center;max-width:340px;margin:4px auto}
+.pal button{width:32px;height:32px;border:2px solid #333;margin:2px;cursor:pointer;border-radius:4px}
+.pal button.active{border-color:#fff;box-shadow:0 0 8px #fff}
+.btn{display:block;width:90%;max-width:340px;margin:6px auto;padding:12px;font-size:16px;color:#000;border:none;border-radius:6px;cursor:pointer;text-align:center}
+.s{background:#0f0;} .c{background:#f44;color:#fff;} .f{background:#0ff;}
+a{color:#0f0;text-decoration:none;display:block;text-align:center;margin:6px auto}
+</style></head>
+<body>
+<h3>DRAW 40x32 -> TFT</h3>
+<canvas id="cv" width="320" height="256"></canvas>
+<div class="pal" id="pl"></div>
+<button class="btn s" onclick="snd()">SEND TO CONSOLE</button>
+<button class="btn f" onclick="fillAll()">FILL ALL</button>
+<button class="btn c" onclick="clr()">CLEAR</button>
+<a href="/">BACK</a>
+<script>
+var W=40,H=32,S=8;
+var cv=document.getElementById('cv');
+var cx=cv.getContext('2d');
+var cur='#000000',drw=false;
+var pal=['#000000','#FFFFFF','#FF0000','#00FF00','#0000FF','#FF8000','#FFFF00','#00FFFF','#FF00FF','#808080','#800000','#008000','#000080','#808000','#800080','#008080'];
+function initPal(){var p=document.getElementById('pl');pal.forEach(function(c){var b=document.createElement('button');b.style.background=c;b.onclick=function(){cur=c;document.querySelectorAll('.pal button').forEach(function(x){x.classList.remove('active')});b.classList.add('active')};p.appendChild(b)})}
+function pt(x,y){cx.fillStyle=cur;cx.fillRect(x*S,y*S,S,S)}
+function go(e){var r=cv.getBoundingClientRect();var px,py;if(e.touches){px=e.touches[0].clientX;py=e.touches[0].clientY}else{px=e.clientX;py=e.clientY}var x=Math.floor((px-r.left)/S);var y=Math.floor((py-r.top)/S);if(x>=0&&x<W&&y>=0&&y<H)pt(x,y)}
+cv.onmousedown=function(e){drw=true;go(e)};
+cv.onmousemove=function(e){if(drw)go(e)};
+cv.onmouseup=function(){drw=false};
+cv.ontouchstart=function(e){e.preventDefault();drw=true;go(e)};
+cv.ontouchmove=function(e){e.preventDefault();if(drw)go(e)};
+cv.ontouchend=function(){drw=false};
+function clr(){cx.fillStyle='#000000';cx.fillRect(0,0,W*S,H*S)}
+function fillAll(){cx.fillStyle=cur;cx.fillRect(0,0,W*S,H*S)}
+function snd(){var d='';for(var y=0;y<H;y++){for(var x=0;x<W;x++){var p=cx.getImageData(x*S,y*S,1,1).data;var v=((p[0]&0xF8)<<8)|((p[1]&0xFC)<<3)|(p[2]>>3);d+=v.toString(16).padStart(4,'0')}}fetch('/uploadimg',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+d}).then(function(r){return r.text()}).then(function(){}).catch(function(){})}
+clr();initPal();
+</script>
+</body></html>
+  )rawliteral";
+  server.send(200, "text/html", html);
+}
+
+void handleSetTime() {
+  if (server.hasArg("t")) {
+    time_t t = (time_t)server.arg("t").toInt();
+    timeval tv = { t, 0 };
+    settimeofday(&tv, nullptr);
+    timeSynced = true;
+    struct tm* lt = localtime(&t);
+    char buf[9];
+    sprintf(buf, "%02d:%02d:%02d", lt->tm_hour, lt->tm_min, lt->tm_sec);
+    showTextBanner("SYNC " + String(buf));
+    espTone(2000, 100);
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleSetColor() {
+  if (!server.hasArg("c")) { server.send(400, "text/plain", "Missing 'c'"); return; }
+  String c = server.arg("c"); c.trim();
+  if (c.length() != 4) { server.send(400, "text/plain", "Need 4 hex"); return; }
+  uint16_t val = 0; bool ok = true;
+  for (int i = 0; i < 4; i++) {
+    char ch = c[i]; uint8_t digit;
+    if (ch >= '0' && ch <= '9') digit = ch - '0';
+    else if (ch >= 'A' && ch <= 'F') digit = ch - 'A' + 10;
+    else if (ch >= 'a' && ch <= 'f') digit = ch - 'a' + 10;
+    else { ok = false; break; }
+    val = (val << 4) | digit;
+  }
+  if (!ok) { server.send(400, "text/plain", "Invalid hex"); return; }
+  COL_BANNER = val;
+  server.send(200, "text/plain", "OK");
+}
+
+void handleUploadImg() {
+  if (!server.hasArg("data")) { server.send(400, "text/plain", "No data"); return; }
+  String data = server.arg("data");
+  if (data.length() < IMG_PIX * 4) { server.send(400, "text/plain", "Too short"); return; }
+  int idx = imgCount % 5;
+  for (int i = 0; i < IMG_PIX; i++) {
+    uint16_t val = 0;
+    for (int j = 0; j < 4; j++) {
+      val <<= 4;
+      char ch = data[i * 4 + j];
+      if (ch >= '0' && ch <= '9') val |= (ch - '0');
+      else if (ch >= 'A' && ch <= 'F') val |= (ch - 'A' + 10);
+      else if (ch >= 'a' && ch <= 'f') val |= (ch - 'a' + 10);
+    }
+    imgBuf[idx][i] = val;
+  }
+  imgCount++;
+  showTextBanner("IMG SAVED!");
+  espTone(2000, 100);
+  server.send(200, "text/plain", "OK");
+}
+
+void handleContact() {
+  IPAddress clientIP = server.client().remoteIP();
+  lastIP = clientIP.toString();
+  if (captureCount < 10) { capturedIPs[captureCount] = lastIP; captureCount++; }
+  else { for (int i = 0; i < 9; i++) capturedIPs[i] = capturedIPs[i+1]; capturedIPs[9] = lastIP; }
+  showIPBanner();
+  espTone(1800, 150);
+  String html = "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+                "<title>Contact</title></head>"
+                "<body style='font-family:Arial;max-width:500px;margin:40px auto;padding:0 16px;background:#0a0a0a;color:#0f0;'>"
+                "<h1>Contact</h1><p>Your device IP: <strong>" + lastIP + "</strong></p>"
+                "<a href='/' style='color:#0f0;'>&larr; Back to Panel</a></body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleSend() {
+  String msg = server.arg("msg"); msg.trim();
+  if (msg.length() == 0) msg = "(empty)";
+  if (recvCount < 20) { recvMsgs[recvCount] = msg; recvCount++; }
+  else { for (int i = 0; i < 19; i++) recvMsgs[i] = recvMsgs[i+1]; recvMsgs[19] = msg; }
+  espTone(1200, 120);
+  showTextBanner(msg);
+  String html = "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Sent</title></head>"
+                "<body style='font-family:Arial;max-width:500px;margin:40px auto;padding:0 16px;background:#0a0a0a;color:#0f0;'>"
+                "<h1>Message sent!</h1><p><strong>" + msg + "</strong></p>"
+                "<a href='/' style='color:#0f0;'>&larr; Back</a></body></html>";
+  server.send(200, "text/html", html);
+}
+
+void radar_scan() {
+  int n = WiFi.scanNetworks();
+  netCount = (n < 20) ? n : 20;
+  for (int i = 0; i < netCount; i++) {
+    nets[i].ssid = WiFi.SSID(i);
+    nets[i].rssi = WiFi.RSSI(i);
+    float norm = constrain((nets[i].rssi + 95) / 65.0, 0.15, 1.0);
+    nets[i].radius = (int)(norm * 55);
+    nets[i].angle = i * 360.0 / max(1, netCount);
+  }
+  WiFi.scanDelete();
+}
+void radar_base(bool full) {
+  if (full) {
+    tft.fillScreen(BLACK);
+    for (int x = 0; x <= 160; x += 10) tft.drawLine(x, 0, x, 128, COL_DIM);
+    for (int y = 0; y <= 128; y += 10) tft.drawLine(0, y, 160, y, COL_DIM);
+    for (int r = 55; r >= 15; r -= 15) tft.drawCircle(80, 60, r, COL_DIM);
+    tft.drawLine(25, 60, 135, 60, COL_DIM);
+    tft.drawLine(80, 5, 80, 115, COL_DIM);
+    for (int a = 0; a < 8; a++) {
+      float rad = (a * 45.0) * PI / 180.0;
+      tft.drawLine(80, 60, 80 + (int)(55*cos(rad)), 60 - (int)(55*sin(rad)), COL_DIM);
+    }
+    prevX = -1; prevY = -1;
+  }
+  float rad = sweepAngle * PI / 180.0;
+  int newX = 80 + (int)(60*cos(rad));
+  int newY = 60 - (int)(60*sin(rad));
+  tft.drawLine(80, 60, newX, newY, COL_HEADER);
+  prevX = newX; prevY = newY;
+}
+void radar_targets() {
+  bool pulse = (millis()/200)%2;
+  for (int i = 0; i < netCount; i++) {
+    float rad = nets[i].angle * PI / 180.0;
+    int px = 80 + (int)(nets[i].radius*cos(rad));
+    int py = 60 - (int)(nets[i].radius*sin(rad));
+    uint16_t c = (nets[i].rssi>=-55)?COL_HEADER:((nets[i].rssi>=-70)?YEL:RED);
+    tft.fillCircle(px, py, pulse?4:3, c);
+    tft.drawCircle(px, py, 6, c);
+  }
+  tft.setTextSize(1); tft.setTextColor(COL_HEADER); tft.setCursor(6,3); tft.print("RADAR");
+  tft.setTextColor(COL_TEXT); tft.setCursor(6,13); tft.print("T:"); tft.print(netCount);
+}
+void app_radar() {
+  if (bannerActive) return;
+  if (clearOnce) { radar_scan(); radar_base(true); clearOnce = false; }
+  if (millis()-lastScan > 10000) { lastScan = millis(); radar_scan(); }
+  if (millis()-lastSweep > 30) {
+    lastSweep = millis();
+    sweepAngle += 3;
+    bool fullCircle = false;
+    if (sweepAngle >= 360) { sweepAngle = 0; fullCircle = true; }
+    radar_base(fullCircle);
+    radar_targets();
+  }
+}
+
+void app_ap() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,10); tft.print("== WI-FI AP ==");
+    tft.setTextColor(COL_TEXT); tft.setCursor(6,28); tft.print("SSID: HACKER_NET");
+    tft.setCursor(6,40); tft.print("PASS: 12345678");
+    if (!apActive) { WiFi.mode(WIFI_AP); apActive = WiFi.softAP("HACKER_NET","12345678"); }
+    tft.setTextColor(CYN); tft.setCursor(6,60); tft.print("Status:");
+    tft.setCursor(6,72); tft.setTextColor(apActive?COL_HEADER:RED);
+    tft.print(apActive?"  RUNNING":"  FAILED");
+    if (apActive) { tft.setTextColor(CYN); tft.setCursor(6,92); tft.print("IP:"); tft.setCursor(30,92); tft.print(WiFi.softAPIP()); }
+    clearOnce = false;
+  }
+  if (key == '5') { apActive=false; WiFi.softAPdisconnect(); clearOnce=true; }
+}
+
+void app_scan() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,4); tft.print("== NETWORKS ==");
+    int n = WiFi.scanNetworks();
+    int shown = (n < 6) ? n : 6;
+    for (int i = 0; i < shown; i++) {
+      int y = 18 + i*18;
+      uint16_t c = (WiFi.RSSI(i)>=-55)?COL_HEADER:((WiFi.RSSI(i)>=-70)?YEL:RED);
+      tft.setTextColor(c); tft.setCursor(6,y);
+      tft.print(WiFi.SSID(i).substring(0,12));
+      tft.setCursor(130,y); tft.print(WiFi.RSSI(i));
+    }
+    WiFi.scanDelete();
+    clearOnce = false;
+  }
+}
+
+const char* hackLines[] = {"> INITIALIZING...","> BYPASSING FIREWALL...","> INJECTING PAYLOAD...","> CRACKING HASH...","> ACCESS GRANTED!"};
+int hackProgress = 0; unsigned long hackLast = 0;
+void app_hack() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,4); tft.print("== HACK SIM ==");
+    hackProgress=0; hackLast=millis(); clearOnce=false;
+  }
+  if (millis()-hackLast > 400 && hackProgress < 5) {
+    hackLast = millis();
+    tft.setTextColor(COL_HEADER); tft.setCursor(6, 20+hackProgress*16);
+    tft.print(hackLines[hackProgress]);
+    tft.drawRect(6,106,148,10,COL_HEADER);
+    tft.fillRect(8,108,(hackProgress+1)*28,6,COL_HEADER);
+    if (hackProgress==4){tft.setTextColor(YEL);tft.setCursor(6,86);tft.print("  WELCOME.");espTone(1500,200);}
+    hackProgress++;
+  }
+}
+
+const char* termLines[] = {"$ sudo hack -v","scanning ports...","port 22 open","port 443 open","brute force ok","root@console:~#"};
+int termLine = 0; unsigned long termLast = 0;
+void app_term() {
+  if (bannerActive) return;
+  if (clearOnce) { tft.fillScreen(BLACK); termLine=0; termLast=millis(); clearOnce=false; }
+  if (millis()-termLast > 350 && termLine < 6) {
+    termLast = millis(); tft.setTextSize(1);
+    tft.setTextColor((termLine==5)?YEL:COL_HEADER);
+    tft.setCursor(6, 10+termLine*18);
+    tft.print(termLines[termLine]);
+    termLine++;
+  }
+  tft.setTextColor(COL_HEADER); tft.setCursor(6, 10+6*18);
+  tft.print((millis()/400)%2 ? "# _" : "#  ");
+}
+
+void app_capture() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,4); tft.print("== CAPTURED IP ==");
+    clearOnce=false;
+  }
+  if (key=='2' && captureScroll>0) captureScroll--;
+  if (key=='8' && captureScroll<max(0,captureCount-6)) captureScroll++;
+  tft.fillRect(6,16,148,100,BLACK);
+  for (int i=0;i<6;i++) {
+    int idx=captureScroll+i;
+    if (idx>=captureCount) break;
+    int y=18+i*16;
+    tft.setTextColor((idx==captureCount-1)?YEL:CYN);
+    tft.setCursor(6,y); tft.print(idx+1); tft.print(". "); tft.print(capturedIPs[idx]);
+  }
+  tft.setTextColor(COL_TEXT); tft.setCursor(6,116); tft.print("Total: "); tft.print(captureCount);
+}
+
+void app_console() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,4); tft.print("== CONSOLE ==");
+    recvScroll = max(0, recvCount - 6);
+    clearOnce = false;
+  }
+  if (key=='2' && recvScroll>0) recvScroll--;
+  if (key=='8' && recvScroll<max(0,recvCount-6)) recvScroll++;
+  tft.fillRect(6,16,148,96,BLACK);
+  for (int i=0;i<6;i++) {
+    int idx = recvScroll + i;
+    if (idx >= recvCount) break;
+    int y = 18 + i*16;
+    tft.setTextColor((idx==recvCount-1)?YEL:CYN);
+    tft.setCursor(6,y); tft.print(recvMsgs[idx].substring(0,18));
+  }
+  tft.setTextColor(COL_TEXT); tft.setCursor(6,116); tft.print("Total: "); tft.print(recvCount);
+}
+
+void app_matrix() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK);
+    for (int i = 0; i < 20; i++) {
+      matrixCols[i] = -random(0, 100);
+      matrixSpeed[i] = 6 + random(0, 10);
+    }
+    matrixLast = millis(); clearOnce = false;
+  }
+  if (millis() - matrixLast > 50) {
+    matrixLast = millis();
+    for (int c = 0; c < 20; c++) {
+      int x = c * 8, y = matrixCols[c];
+      if (y >= 0 && y < 128) tft.fillRect(x, y, 8, 10, BLACK);
+      y += matrixSpeed[c];
+      if (y > 126) { y = -random(0, 80); matrixSpeed[c] = 6 + random(0, 10); }
+      matrixCols[c] = y;
+      if (y >= 0 && y < 126) {
+        char ch = random(33, 127);
+        tft.setTextColor(random(10) > 7 ? COL_TEXT : COL_HEADER);
+        tft.setTextSize(1); tft.setCursor(x, y); tft.print(ch);
+      }
+    }
+    tft.setTextColor(COL_DIM, BLACK); tft.setTextSize(1);
+    tft.setCursor(2, 0); tft.print("MATRIX");
+  }
+}
+
+void app_gallery() {
+  if (bannerActive) return;
+  int total = imgCount;
+  if (total > 5) total = 5;
+  if (clearOnce) {
+    if (total == 0) {
+      tft.fillScreen(BLACK);
+      tft.setTextColor(YEL); tft.setTextSize(1);
+      tft.setCursor(20, 50); tft.print("NO IMAGES YET");
+      tft.setTextColor(CYN); tft.setCursor(10, 68);
+      tft.print("Open 192.168.4.1/draw");
+      tft.setCursor(22, 84); tft.print("to create art!");
+    } else {
+      galleryIdx = 0;
+      drawImage(galleryIdx);
+      showGalleryLabel();
+    }
+    clearOnce = false;
+  }
+  if (total == 0) return;
+  if (key == '8') { galleryIdx = (galleryIdx + 1) % total; drawImage(galleryIdx); showGalleryLabel(); click(); }
+  if (key == '2') { galleryIdx = (galleryIdx - 1 + total) % total; drawImage(galleryIdx); showGalleryLabel(); click(); }
+}
+
+void app_theme() {
+  if (bannerActive) return;
+  if (clearOnce) {
+    tft.fillScreen(BLACK); tft.setTextSize(1);
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,4); tft.print("== THEME ==");
+    tft.setTextColor(COL_TEXT); tft.setCursor(6,20); tft.print("1: Black (default)");
+    tft.setCursor(6,36); tft.print("2: Blue");
+    tft.setCursor(6,52); tft.print("3: Red");
+    tft.setTextColor(COL_DIM); tft.setCursor(6,70); tft.print("Press 1/2/3");
+    tft.setCursor(6,84); tft.print("* to go back");
+    tft.setTextColor(COL_HEADER); tft.setCursor(6,100); tft.print("Current: ");
+    switch (currentTheme) {
+      case THEME_BLACK: tft.print("BLACK"); break;
+      case THEME_BLUE:  tft.print("BLUE");  break;
+      case THEME_RED:   tft.print("RED");   break;
+    }
+    clearOnce = false;
+  }
+  if (key == '1') { setTheme(THEME_BLACK); clearOnce = true; click(); }
+  if (key == '2') { setTheme(THEME_BLUE);  clearOnce = true; click(); }
+  if (key == '3') { setTheme(THEME_RED);   clearOnce = true; click(); }
+}
+
+void drawLockFull() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 14, COL_HEADER);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("LOCK LVL "); tft.print(lockLevel);
+  tft.setCursor(120, 3); tft.print("[*] exit");
+  tft.fillRoundRect(LOCK_X, LOCK_Y, LOCK_W, LOCK_H, 6, DGOLD);
+  tft.drawRoundRect(LOCK_X, LOCK_Y, LOCK_W, LOCK_H, 6, LGOLD);
+  tft.drawRoundRect(LOCK_X+2, LOCK_Y+2, LOCK_W-4, LOCK_H-4, 4, YEL);
+  for (int i = 0; i < 5; i++) {
+    int px = LOCK_X + LPIN_GAP + i * (LPIN_W + LPIN_GAP);
+    tft.fillRect(px, LPIN_TOP_Y, LPIN_W, 60, 0x2104);
+    tft.drawFastHLine(px, LPIN_TOP_Y + 8, LPIN_W, 0x8410);
+    int pinY = LPIN_BOT_Y - LPIN_H - (int)(lpins[i].displayY * 30);
+    uint16_t pinColor;
+    if (lpins[i].solved) pinColor = GREEN;
+    else if (liftSlot == i) pinColor = CYN;
+    else if (i == pickSlot && !lockDone && !lockFail) pinColor = LGOLD;
+    else pinColor = YEL;
+    tft.fillRect(px + 1, pinY + 1, LPIN_W - 2, LPIN_H, 0x3186);
+    tft.fillRect(px + 2, pinY + 2, LPIN_W - 4, LPIN_H - 2, pinColor);
+    tft.fillRect(px + 3, pinY + 3, 2, LPIN_H - 4, WHITE);
+    tft.setTextColor(COL_DIM); tft.setTextSize(1);
+    tft.setCursor(px + LPIN_W/2 - 3, LPIN_BOT_Y + 3); tft.print(i + 1);
+    if (lpins[i].solved) {
+      tft.fillRect(px + LPIN_W/2 - 6, LOCK_Y + 1, 12, 8, DGOLD);
+      tft.setTextColor(GREEN); tft.setTextSize(1);
+      tft.setCursor(px + LPIN_W/2 - 5, LOCK_Y + 2); tft.print(lpins[i].order + 1);
+    }
+  }
+  int pickX = (int)pickDisplayX;
+  int hookY = LPIN_BOT_Y - 5 - (int)(lpins[pickSlot].displayY * 30);
+  int bottomY = LOCK_Y + LOCK_H + 6;
+  tft.drawFastVLine(pickX, LPIN_BOT_Y - 2, bottomY - LPIN_BOT_Y + 2, GREY);
+  tft.drawFastVLine(pickX - 1, LPIN_BOT_Y - 2, bottomY - LPIN_BOT_Y + 2, 0x4208);
+  tft.drawFastVLine(pickX, hookY, 6, GREY);
+  tft.drawFastHLine(pickX - 3, hookY, 4, GREY);
+  tft.fillRect(pickX - 2, bottomY - 2, 5, 4, GREY);
+  tft.drawRect(pickX - 2, bottomY - 2, 5, 4, WHITE);
+  if (!lockDone && !lockFail && liftSlot < 0) {
+    int arrowX = LOCK_X + LPIN_GAP + pickSlot * (LPIN_W + LPIN_GAP) + LPIN_W / 2;
+    tft.fillTriangle(arrowX - 3, LOCK_Y - 3, arrowX + 3, LOCK_Y - 3, arrowX, LOCK_Y, COL_HEADER);
+  }
+  for (int i = 0; i < 5; i++) {
+    int dotX = 60 + i * 8, dotY = 120;
+    if (i < nextOrder) tft.fillCircle(dotX, dotY, 2, GREEN);
+    else if (i == nextOrder) tft.fillCircle(dotX, dotY, 2, COL_HEADER);
+    else tft.drawCircle(dotX, dotY, 2, COL_DIM);
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(4, 120); tft.print("[4/6]move [5]pick");
+  if (lockDone) {
+    tft.fillRoundRect(30, 48, 100, 32, 6, GREEN);
+    tft.drawRoundRect(30, 48, 100, 32, 6, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(38, 58); tft.print("OPENED");
+  } else if (lockFail) {
+    tft.fillRoundRect(30, 48, 100, 32, 6, RED);
+    tft.drawRoundRect(30, 48, 100, 32, 6, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(42, 58); tft.print("RESET");
+  }
+}
+
+void initLock() {
+  randomSeed(micros());
+  int orderList[5] = {0,1,2,3,4};
+  for (int i = 4; i > 0; i--) {
+    int j = random(i + 1);
+    int tmp = orderList[i]; orderList[i] = orderList[j]; orderList[j] = tmp;
+  }
+  for (int i = 0; i < 5; i++) {
+    lpins[i].displayY = 0; lpins[i].targetY = 0;
+    lpins[i].solved = false; lpins[i].order = orderList[i];
+  }
+  pickSlot = 0;
+  pickDisplayX = LOCK_X + LPIN_GAP + LPIN_W / 2;
+  nextOrder = 0; lockSolvedCount = 0;
+  lockDone = false; lockFail = false;
+  liftSlot = -1; liftProgress = 0; liftResult = false;
+}
+
+bool processLock() {
+  bool changed = false;
+  for (int i = 0; i < 5; i++) {
+    float diff = lpins[i].targetY - lpins[i].displayY;
+    if (abs(diff) > 0.005) { lpins[i].displayY += diff * 0.12; changed = true; }
+    else lpins[i].displayY = lpins[i].targetY;
+  }
+  float targetPickX = LOCK_X + LPIN_GAP + pickSlot * (LPIN_W + LPIN_GAP) + LPIN_W / 2;
+  if (abs(pickDisplayX - targetPickX) > 0.5) {
+    pickDisplayX += (targetPickX - pickDisplayX) * 0.2; changed = true;
+  } else pickDisplayX = targetPickX;
+  if (liftSlot >= 0) {
+    changed = true;
+    liftProgress += 0.06;
+    lpins[liftSlot].displayY = liftProgress * 0.7;
+    if (liftProgress >= 0.7 && !liftResult) {
+      liftResult = true;
+      if (lpins[liftSlot].order == nextOrder) {
+        lpins[liftSlot].targetY = 1.0; lpins[liftSlot].solved = true;
+        nextOrder++; lockSolvedCount++;
+        espTone(2000, 60); espTone(2500, 50);
+        if (nextOrder >= 5) {
+          lockDone = true; doneTimer = millis();
+          espTone(1500, 100); delay(80); espTone(2000, 100); delay(80); espTone(2500, 200);
+        }
+      } else { liftResult = false; }
+    }
+    if (liftProgress >= 1.0) {
+      liftProgress = 0;
+      if (lpins[liftSlot].solved) { liftSlot = -1; }
+      else {
+        lpins[liftSlot].targetY = 0; liftSlot = -1;
+        lockFail = true; failTimer = millis(); espTone(200, 300);
+        for (int i = 0; i < 5; i++) {
+          if (lpins[i].solved) { lpins[i].solved = false; lpins[i].targetY = 0; }
+        }
+        nextOrder = 0; lockSolvedCount = 0;
+      }
+    }
+  }
+  if (lockFail) { changed = true; if (millis() - failTimer > 1200) lockFail = false; }
+  if (lockDone) {
+    changed = true;
+    if (millis() - doneTimer > 1500) { lockLevel++; initLock(); showTextBanner("LVL " + String(lockLevel)); }
+  }
+  if (liftSlot < 0 && !lockFail && !lockDone && key != 0) {
+    if (key == '4') { if (pickSlot > 0) { pickSlot--; click(); changed = true; } }
+    else if (key == '6') { if (pickSlot < 4) { pickSlot++; click(); changed = true; } }
+    else if (key == '5') {
+      if (!lpins[pickSlot].solved) { liftSlot = pickSlot; liftProgress = 0; liftResult = false; espTone(800, 30); changed = true; }
+    }
+  }
+  return changed;
+}
+
+void app_lockpick() {
+  if (bannerActive) return;
+  if (clearOnce) { drawLockFull(); clearOnce = false; return; }
+  if (processLock()) drawLockFull();
+}
+
+void initCrack() {
+  randomSeed(micros());
+  codeLen = 3 + crackLevel - 1;
+  if (codeLen > CODE_MAX) codeLen = CODE_MAX;
+  for (int i = 0; i < codeLen; i++) { codeDigits[i] = random(0, 10); crackSolved[i] = false; }
+  crackPos = 0; tryDigit = 0;
+  crackWrong = false; crackDone = false; crackAttempts = 0;
+  crackBoltExtend = 0; crackBoltTarget = 0;
+}
+
+void drawCrackLock() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 14, COL_HEADER);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("CODE LVL "); tft.print(crackLevel);
+  tft.setCursor(130, 3); tft.print("[*]");
+  tft.fillRoundRect(CRACK_LOCK_X, CRACK_LOCK_Y, CRACK_LOCK_W, CRACK_LOCK_H, 5, DGOLD);
+  tft.drawRoundRect(CRACK_LOCK_X, CRACK_LOCK_Y, CRACK_LOCK_W, CRACK_LOCK_H, 5, LGOLD);
+  tft.drawRoundRect(CRACK_LOCK_X + 2, CRACK_LOCK_Y + 2, CRACK_LOCK_W - 4, CRACK_LOCK_H - 4, 3, YEL);
+  int shackleX = CRACK_LOCK_X + CRACK_LOCK_W / 2;
+  int shackleY = CRACK_LOCK_Y - 2;
+  tft.drawCircle(shackleX, shackleY, 7, LGOLD);
+  tft.drawCircle(shackleX, shackleY, 5, LGOLD);
+  tft.fillRect(shackleX - 8, shackleY, 16, 8, BLACK);
+  tft.fillRect(shackleX - 8, shackleY + 1, 16, 2, LGOLD);
+  int boltY = CRACK_LOCK_Y + CRACK_LOCK_H / 2 - CRACK_BOLT_THICK / 2;
+  int ext = (int)crackBoltExtend;
+  int boltInsideX = CRACK_LOCK_X + 6;
+  int boltInsideW = CRACK_LOCK_W - 12;
+  tft.fillRect(boltInsideX, boltY, boltInsideW, CRACK_BOLT_THICK, 0x4208);
+  tft.drawFastHLine(boltInsideX, boltY, boltInsideW, 0x8410);
+  tft.drawFastHLine(boltInsideX, boltY + CRACK_BOLT_THICK - 1, boltInsideW, 0x8410);
+  if (ext > 0) {
+    tft.fillRect(CRACK_LOCK_X - ext, boltY, ext, CRACK_BOLT_THICK, GREY);
+    tft.drawRect(CRACK_LOCK_X - ext, boltY, ext, CRACK_BOLT_THICK, WHITE);
+    tft.fillTriangle(CRACK_LOCK_X - ext, boltY, CRACK_LOCK_X - ext, boltY + CRACK_BOLT_THICK, CRACK_LOCK_X - ext - 5, boltY + CRACK_BOLT_THICK / 2, GREY);
+    tft.drawTriangle(CRACK_LOCK_X - ext, boltY, CRACK_LOCK_X - ext, boltY + CRACK_BOLT_THICK, CRACK_LOCK_X - ext - 5, boltY + CRACK_BOLT_THICK / 2, WHITE);
+  }
+  int totalW = codeLen * CRACK_CELL_W + (codeLen - 1) * CRACK_CELL_GAP;
+  int startX = CRACK_LOCK_X + (CRACK_LOCK_W - totalW) / 2;
+  int cellY = CRACK_LOCK_Y + 6;
+  for (int i = 0; i < codeLen; i++) {
+    int cx = startX + i * (CRACK_CELL_W + CRACK_CELL_GAP);
+    if (crackSolved[i]) {
+      tft.fillRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, DGREEN);
+      tft.drawRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, GREEN);
+      tft.setTextColor(GREEN); tft.setTextSize(1);
+      tft.setCursor(cx + 4, cellY + 4); tft.print(codeDigits[i]);
+    } else if (i == crackPos && !crackDone) {
+      uint16_t borderCol = crackWrong ? RED : ((millis() / 250) % 2 ? COL_HEADER : COL_TEXT);
+      tft.fillRoundRect(cx - 1, cellY - 1, CRACK_CELL_W + 2, CRACK_CELL_W + 2, 3, borderCol);
+      tft.fillRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, BLACK);
+      tft.drawRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, COL_TEXT);
+      tft.setTextColor(crackWrong ? RED : COL_TEXT); tft.setTextSize(1);
+      tft.setCursor(cx + 4, cellY + 4); tft.print(tryDigit);
+    } else {
+      tft.fillRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, 0x2104);
+      tft.drawRoundRect(cx, cellY, CRACK_CELL_W, CRACK_CELL_W, 2, COL_DIM);
+      tft.setTextColor(COL_DIM); tft.setTextSize(1);
+      tft.setCursor(cx + 5, cellY + 4); tft.print("?");
+    }
+  }
+  if (!crackDone && !crackWrong && crackPos < codeLen) {
+    int ax = startX + crackPos * (CRACK_CELL_W + CRACK_CELL_GAP) + CRACK_CELL_W / 2;
+    tft.fillTriangle(ax - 2, cellY - 3, ax + 2, cellY - 3, ax, cellY - 1, COL_HEADER);
+  }
+  int dotSpacing = 8;
+  int dotsTotalW = codeLen * dotSpacing;
+  int dotStartX = 80 - dotsTotalW / 2 + dotSpacing / 2;
+  for (int i = 0; i < codeLen; i++) {
+    int dotX = dotStartX + i * dotSpacing;
+    if (crackSolved[i]) tft.fillCircle(dotX, 102, 2, GREEN);
+    else if (i == crackPos) tft.fillCircle(dotX, 102, 2, COL_HEADER);
+    else tft.drawCircle(dotX, 102, 2, COL_DIM);
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(4, 116); tft.print("[2/8]dial [#]ok");
+  tft.setCursor(100, 116); tft.print("Try:"); tft.print(crackAttempts);
+  if (crackDone) {
+    tft.fillRoundRect(30, 42, 100, 28, 5, GREEN);
+    tft.drawRoundRect(30, 42, 100, 28, 5, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(35, 49); tft.print("CRACKED");
+  } else if (crackWrong) {
+    tft.fillRoundRect(30, 42, 100, 28, 5, RED);
+    tft.drawRoundRect(30, 42, 100, 28, 5, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(42, 49); tft.print("WRONG");
+  }
+}
+
+bool processCrack() {
+  bool changed = false;
+  float diff = crackBoltTarget - crackBoltExtend;
+  if (abs(diff) > 0.5) { crackBoltExtend += diff * 0.15; changed = true; }
+  else crackBoltExtend = crackBoltTarget;
+  if (crackWrong && millis() - crackWrongTimer > 800) { crackWrong = false; changed = true; }
+  if (crackDone && millis() - crackDoneTimer > 1500) {
+    crackLevel++; initCrack(); showTextBanner("LVL " + String(crackLevel)); return true;
+  }
+  if (!crackDone && !crackWrong && crackPos < codeLen && key != 0) {
+    if (key == '2') { tryDigit = (tryDigit + 1) % 10; click(); changed = true; }
+    else if (key == '8') { tryDigit = (tryDigit + 9) % 10; click(); changed = true; }
+    else if (key == '#') {
+      crackAttempts++;
+      if (tryDigit == codeDigits[crackPos]) {
+        crackSolved[crackPos] = true; crackPos++; tryDigit = 0;
+        crackBoltTarget = ((float)crackPos / codeLen) * CRACK_BOLT_MAX_EXT;
+        espTone(2000, 60); espTone(2500, 50); changed = true;
+        if (crackPos >= codeLen) {
+          crackDone = true; crackDoneTimer = millis();
+          crackBoltTarget = CRACK_BOLT_MAX_EXT;
+          espTone(1500, 100); delay(80); espTone(2000, 100); delay(80); espTone(2500, 200);
+        }
+      } else {
+        crackWrong = true; crackWrongTimer = millis(); espTone(200, 200); changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+void app_crack() {
+  if (bannerActive) return;
+  if (clearOnce) { drawCrackLock(); clearOnce = false; return; }
+  bool changed = processCrack();
+  static unsigned long pulseTimer = 0;
+  if (!crackDone && !crackWrong && millis() - pulseTimer > 250) { pulseTimer = millis(); changed = true; }
+  if (changed) drawCrackLock();
+}
+
+void initSnake() {
+  snakeLen = 3;
+  snakeX[0]=10; snakeY[0]=6; snakeX[1]=9; snakeY[1]=6; snakeX[2]=8; snakeY[2]=6;
+  snakeDir = 0; snakeScore = 0; snakeDead = false;
+  foodX = random(1, SNAKE_GRID_W-1); foodY = random(1, SNAKE_GRID_H-1);
+  snakeLastMove = millis();
+}
+
+void drawSnake() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("SNAKE");
+  tft.setCursor(120, 3); tft.print("S:"); tft.print(snakeScore);
+  int fx = foodX * SNAKE_CELL, fy = foodY * SNAKE_CELL + 12;
+  tft.fillCircle(fx + 3, fy + 3, 3, RED);
+  tft.drawCircle(fx + 3, fy + 3, 3, WHITE);
+  for (int i = 0; i < snakeLen; i++) {
+    int sx = snakeX[i] * SNAKE_CELL, sy = snakeY[i] * SNAKE_CELL + 12;
+    uint16_t c = (i == 0) ? GREEN : DGREEN;
+    tft.fillRect(sx, sy, SNAKE_CELL - 1, SNAKE_CELL - 1, c);
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(2, 120); tft.print("[2/4/6/8] [5]restart [*]exit");
+  if (snakeDead) {
+    tft.fillRoundRect(30, 48, 100, 28, 5, RED);
+    tft.drawRoundRect(30, 48, 100, 28, 5, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(40, 55); tft.print("DEAD");
+  }
+}
+
+bool processSnake() {
+  if (snakeDead) { if (key == '5') { initSnake(); return true; } return false; }
+  if (key == '2' && snakeDir != 1) snakeDir = 3;
+  else if (key == '8' && snakeDir != 3) snakeDir = 1;
+  else if (key == '4' && snakeDir != 0) snakeDir = 2;
+  else if (key == '6' && snakeDir != 2) snakeDir = 0;
+  if (millis() - snakeLastMove < SNAKE_SPEED) return false;
+  snakeLastMove = millis();
+  int nx = snakeX[0], ny = snakeY[0];
+  if (snakeDir == 0) nx++;
+  else if (snakeDir == 1) ny++;
+  else if (snakeDir == 2) nx--;
+  else if (snakeDir == 3) ny--;
+  if (nx < 0 || nx >= SNAKE_GRID_W || ny < 0 || ny >= SNAKE_GRID_H) { snakeDead = true; espTone(200, 300); return true; }
+  for (int i = 0; i < snakeLen; i++) {
+    if (snakeX[i] == nx && snakeY[i] == ny) { snakeDead = true; espTone(200, 300); return true; }
+  }
+  for (int i = snakeLen; i > 0; i--) { snakeX[i] = snakeX[i-1]; snakeY[i] = snakeY[i-1]; }
+  snakeX[0] = nx; snakeY[0] = ny;
+  if (nx == foodX && ny == foodY) {
+    snakeLen++; snakeScore += 10;
+    foodX = random(1, SNAKE_GRID_W-1); foodY = random(1, SNAKE_GRID_H-1);
+    espTone(2000, 50);
+  }
+  return true;
+}
+
+void app_snake() {
+  if (bannerActive) return;
+  if (clearOnce) { initSnake(); drawSnake(); clearOnce = false; return; }
+  if (processSnake()) drawSnake();
+}
+
+void initReact() {
+  reactState = REACT_WAIT;
+  reactDelay = random(1000, 4000);
+  reactStartTime = millis(); reactTime = 0;
+}
+
+void drawReact() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("REACTION");
+  tft.setCursor(95, 3); tft.print("Best:"); tft.print(reactBest < 999 ? reactBest : 0);
+  if (reactState == REACT_WAIT) {
+    tft.fillRect(20, 20, 120, 88, RED);
+    tft.drawRoundRect(20, 20, 120, 88, 6, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(35, 55); tft.print("WAIT...");
+    tft.setTextSize(1); tft.setCursor(45, 80); tft.print("Don't press!");
+  } else if (reactState == REACT_GO) {
+    tft.fillRect(20, 20, 120, 88, GREEN);
+    tft.drawRoundRect(20, 20, 120, 88, 6, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(50, 55); tft.print("GO!");
+    tft.setTextSize(1); tft.setCursor(50, 80); tft.print("Press 5!");
+  } else if (reactState == REACT_RESULT) {
+    tft.fillRect(20, 20, 120, 88, 0x0220);
+    tft.drawRoundRect(20, 20, 120, 88, 6, COL_HEADER);
+    tft.setTextColor(COL_HEADER); tft.setTextSize(1);
+    tft.setCursor(45, 35); tft.print("YOUR TIME:");
+    tft.setTextSize(3); tft.setCursor(50, 55); tft.print(reactTime);
+    tft.setTextSize(1); tft.setCursor(55, 90); tft.print("ms");
+    tft.setTextColor(COL_DIM); tft.setCursor(4, 120);
+    tft.print("[5] next [*] exit");
+  } else if (reactState == REACT_DEAD) {
+    tft.fillRect(20, 20, 120, 88, RED);
+    tft.drawRoundRect(20, 20, 120, 88, 6, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(35, 50); tft.print("TOO");
+    tft.setCursor(28, 70); tft.print("EARLY!");
+    tft.setTextSize(1); tft.setCursor(40, 95); tft.print("[5] retry");
+  }
+}
+
+void app_react() {
+  if (bannerActive) return;
+  if (clearOnce) { initReact(); drawReact(); clearOnce = false; return; }
+  bool changed = false;
+  if (reactState == REACT_WAIT) {
+    if (millis() - reactStartTime > reactDelay) {
+      reactState = REACT_GO; reactStartTime = millis(); changed = true; espTone(1500, 50);
+    }
+    if (key == '5') { reactState = REACT_DEAD; changed = true; espTone(200, 200); }
+  } else if (reactState == REACT_GO) {
+    if (key == '5') {
+      reactTime = millis() - reactStartTime;
+      reactState = REACT_RESULT;
+      if (reactTime < reactBest) reactBest = reactTime;
+      changed = true; espTone(2000, 100);
+    }
+  } else if (reactState == REACT_RESULT || reactState == REACT_DEAD) {
+    if (key == '5') { initReact(); changed = true; }
+  }
+  if (changed) drawReact();
+}
+
+void drawDiceFace(int x, int y, int val, int sz) {
+  tft.fillRoundRect(x, y, sz, sz, 4, WHITE);
+  tft.drawRoundRect(x, y, sz, sz, 4, BLACK);
+  int r = sz / 10, cx = x + sz/2, cy = y + sz/2, o = sz/4;
+  switch (val) {
+    case 1: tft.fillCircle(cx, cy, r, BLACK); break;
+    case 2: tft.fillCircle(cx-o, cy-o, r, BLACK); tft.fillCircle(cx+o, cy+o, r, BLACK); break;
+    case 3: tft.fillCircle(cx-o,cy-o,r,BLACK); tft.fillCircle(cx,cy,r,BLACK); tft.fillCircle(cx+o,cy+o,r,BLACK); break;
+    case 4: tft.fillCircle(cx-o,cy-o,r,BLACK); tft.fillCircle(cx+o,cy-o,r,BLACK);
+            tft.fillCircle(cx-o,cy+o,r,BLACK); tft.fillCircle(cx+o,cy+o,r,BLACK); break;
+    case 5: tft.fillCircle(cx-o,cy-o,r,BLACK); tft.fillCircle(cx+o,cy-o,r,BLACK); tft.fillCircle(cx,cy,r,BLACK);
+            tft.fillCircle(cx-o,cy+o,r,BLACK); tft.fillCircle(cx+o,cy+o,r,BLACK); break;
+    case 6: tft.fillCircle(cx-o,cy-o,r,BLACK); tft.fillCircle(cx+o,cy-o,r,BLACK);
+            tft.fillCircle(cx-o,cy,r,BLACK); tft.fillCircle(cx+o,cy,r,BLACK);
+            tft.fillCircle(cx-o,cy+o,r,BLACK); tft.fillCircle(cx+o,cy+o,r,BLACK); break;
+  }
+}
+
+void drawDice() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("DICE");
+  tft.setCursor(100, 3); tft.print("H:"); tft.print(diceHigh);
+  int dsz = 44;
+  drawDiceFace(80 - dsz - 6, 26, diceVal[0], dsz);
+  drawDiceFace(80 + 6, 26, diceVal[1], dsz);
+  tft.setTextColor(GREEN); tft.setTextSize(2);
+  tft.setCursor(60, 82);
+  if (diceRolling) tft.print(" . . ."); else tft.print(diceVal[0] + diceVal[1]);
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(4, 120); tft.print("[5] roll [*] exit");
+}
+
+void app_dice() {
+  if (bannerActive) return;
+  if (clearOnce) { diceVal[0]=1; diceVal[1]=1; drawDice(); clearOnce = false; return; }
+  if (diceRolling) {
+    if (millis() - diceRollTimer > 80) {
+      diceRollTimer = millis();
+      diceVal[0] = random(1, 7); diceVal[1] = random(1, 7);
+      diceRollCount++; drawDice(); espTone(1000, 15);
+      if (diceRollCount >= 10) {
+        diceRolling = false; diceRollCount = 0;
+        int sum = diceVal[0] + diceVal[1];
+        if (sum > diceHigh) diceHigh = sum;
+        drawDice();
+        if (sum >= 11) { espTone(2500, 200); showTextBanner("BOXCARS!"); }
+        else espTone(1500, 50);
+      }
+    }
+  }
+  if (key == '5' && !diceRolling) { diceRolling = true; diceRollCount = 0; diceRollTimer = millis(); }
+}
+
+void initSimon() {
+  simonLen = 0; simonInputPos = 0; simonShowPos = 0;
+  simonShowing = false; simonDead = false; simonScore = 0;
+}
+
+void simonAddStep() {
+  simonSeq[simonLen] = random(0, 4); simonLen++;
+  simonShowing = true; simonShowPos = 0; simonShowTimer = millis();
+}
+
+void drawSimon() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("SIMON");
+  tft.setCursor(90, 3); tft.print("S:"); tft.print(simonScore);
+  tft.setCursor(125, 3); tft.print("H:"); tft.print(simonHighScore);
+  for (int i = 0; i < 4; i++) {
+    uint16_t c = (simonShowing && simonShowPos < simonLen && simonSeq[simonShowPos] == i)
+                 ? simonBright[i] : simonDim[i];
+    int x = simonBtnPos[i][0], y = simonBtnPos[i][1];
+    tft.fillRoundRect(x, y, 56, 44, 6, c);
+    tft.drawRoundRect(x, y, 56, 44, 6, WHITE);
+  }
+  if (simonDead) {
+    tft.fillRoundRect(30, 44, 100, 36, 5, RED);
+    tft.drawRoundRect(30, 44, 100, 36, 5, WHITE);
+    tft.setTextColor(WHITE); tft.setTextSize(2);
+    tft.setCursor(38, 52); tft.print("GAME");
+    tft.setCursor(38, 68); tft.print("OVER");
+  }
+  if (!simonShowing && !simonDead) {
+    tft.setTextColor(COL_DIM); tft.setTextSize(1);
+    if (simonLen == 0) tft.setCursor(30, 116);
+    else tft.setCursor(16, 116);
+    tft.print(simonLen == 0 ? "[5] start [*] exit" : "[1/3/7/9] [*] exit");
+  }
+}
+
+void app_simon() {
+  if (bannerActive) return;
+  if (clearOnce) { initSimon(); drawSimon(); clearOnce = false; return; }
+  bool changed = false;
+  if (simonShowing) {
+    if (millis() - simonShowTimer > 400) {
+      simonShowTimer = millis(); simonShowPos++;
+      if (simonShowPos >= simonLen) { simonShowing = false; simonInputPos = 0; }
+      changed = true;
+      if (simonShowPos < simonLen) espTone(800 + simonSeq[simonShowPos] * 300, 80);
+    }
+  } else if (!simonDead) {
+    if (simonLen == 0 && key == '5') {
+      simonAddStep(); changed = true; espTone(800 + simonSeq[0] * 300, 80);
+    } else if (simonLen > 0) {
+      for (int i = 0; i < 4; i++) {
+        if (key == simonBtnKeys[i]) {
+          if (simonSeq[simonInputPos] == i) {
+            simonInputPos++; espTone(800 + i * 300, 60); changed = true;
+            if (simonInputPos >= simonLen) {
+              simonScore++;
+              if (simonScore > simonHighScore) simonHighScore = simonScore;
+              delay(300); simonAddStep(); changed = true;
+            }
+          } else { simonDead = true; espTone(200, 300); changed = true; }
+          break;
+        }
+      }
+    }
+  } else { if (key == '5') { initSimon(); drawSimon(); return; } }
+  if (changed) drawSimon();
+}
+
+void drawCalcButton(int r, int c, const char* label, bool selected) {
+  int x = CALC_BTN_X0 + c * (CALC_BTN_W + CALC_BTN_GAP);
+  int y = CALC_BTN_Y0 + r * (CALC_BTN_H + CALC_BTN_GAP);
+  uint16_t bg, border, txt;
+  if (selected) { bg = GREEN; border = WHITE; txt = BLACK; }
+  else { bg = 0x0120; border = DGREEN; txt = COL_TEXT; }
+  tft.fillRoundRect(x, y, CALC_BTN_W, CALC_BTN_H, 4, bg);
+  tft.drawRoundRect(x, y, CALC_BTN_W, CALC_BTN_H, 4, border);
+  tft.setTextColor(txt); tft.setTextSize(1);
+  int tw = strlen(label) * 6;
+  tft.setCursor(x + (CALC_BTN_W - tw) / 2, y + (CALC_BTN_H - 7) / 2);
+  tft.print(label);
+}
+
+void drawCalcScreen() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("CALCULATOR");
+  tft.setCursor(120, 3); tft.print("[*]");
+  tft.fillRoundRect(2, 14, 156, 18, 3, 0x0220);
+  tft.drawRoundRect(2, 14, 156, 18, 3, DGREEN);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  String disp = calcExpr;
+  if (calcShowResult) disp = String(calcResult, 4);
+  if (calcError) disp = "ERROR";
+  if (disp.length() > 24) disp = disp.substring(disp.length() - 24);
+  tft.setCursor(5, 19);
+  if (disp.length() == 0) { tft.setTextColor(COL_DIM); tft.print("0"); }
+  else tft.print(disp);
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      drawCalcButton(r, c, calcBtns[r][c], (r == calcCurR && c == calcCurC));
+    }
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(2, 118);
+  tft.print("[2/4/6/8]nav [5]sel [C]clr");
+}
+
+int calcFindOp(String e, int from) {
+  for (int i = from; i < (int)e.length(); i++) {
+    char ch = e[i];
+    if ((ch == '+' || ch == '-' || ch == 'x' || ch == '/') && i > from) return i;
+  }
+  return -1;
+}
+
+void calcDoEqual() {
+  if (calcExpr.length() == 0) return;
+  String expr = calcExpr;
+  expr.replace("x", "*");
+  double result = 0;
+  int opPos = calcFindOp(expr, 0);
+  if (opPos < 0) {
+    result = expr.toDouble();
+  } else {
+    double left = expr.substring(0, opPos).toDouble();
+    char op = expr[opPos];
+    String rightStr = expr.substring(opPos + 1);
+    int op2 = calcFindOp(rightStr, 0);
+    if (op2 >= 0) rightStr = rightStr.substring(0, op2);
+    double right = rightStr.toDouble();
+    if (op == '+') result = left + right;
+    else if (op == '-') result = left - right;
+    else if (op == '*') result = left * right;
+    else if (op == '/') {
+      if (right == 0) { calcError = true; return; }
+      result = left / right;
+    }
+  }
+  calcResult = result;
+  calcShowResult = true;
+  espTone(2000, 50);
+}
+
+void app_calc() {
+  if (bannerActive) return;
+  bool redraw = clearOnce;
+  if (clearOnce) { calcCurR = 3; calcCurC = 1; clearOnce = false; }
+  if (key == '2') { if (calcCurR > 0) calcCurR--; else calcCurR = 3; click(); redraw = true; }
+  if (key == '8') { if (calcCurR < 3) calcCurR++; else calcCurR = 0; click(); redraw = true; }
+  if (key == '4') { if (calcCurC > 0) calcCurC--; else calcCurC = 3; click(); redraw = true; }
+  if (key == '6') { if (calcCurC < 3) calcCurC++; else calcCurC = 0; click(); redraw = true; }
+  if (key == '5') {
+    click();
+    const char* sym = calcBtns[calcCurR][calcCurC];
+    if (calcShowResult || calcError) { calcExpr = ""; calcShowResult = false; calcError = false; }
+    if (strcmp(sym, "=") == 0) {
+      calcDoEqual();
+    } else if (strcmp(sym, ".") == 0) {
+      bool hasDot = false;
+      int lastOp = -1;
+      for (int i = calcExpr.length() - 1; i >= 0; i--) {
+        char ch = calcExpr[i];
+        if (ch == '+' || ch == '-' || ch == 'x' || ch == '/') { lastOp = i; break; }
+        if (ch == '.') hasDot = true;
+      }
+      if (!hasDot) {
+        if (calcExpr.length() == 0 || lastOp == (int)(calcExpr.length() - 1)) {
+          calcExpr += "0.";
+        } else {
+          calcExpr += ".";
+        }
+      }
+    } else {
+      calcExpr += sym;
+    }
+    redraw = true;
+  }
+  if (key == 'C') {
+    calcExpr = ""; calcShowResult = false; calcError = false;
+    click(); redraw = true;
+  }
+  if (key == 'D') { calcDoEqual(); redraw = true; }
+  if (key == 'A') {
+    calcExpr = ""; calcShowResult = false; calcError = false;
+    click(); redraw = true;
+  }
+  if (redraw) drawCalcScreen();
+}
+
+void drawNotesScreen() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, GREEN);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("NOTES");
+  tft.setCursor(70, 3); tft.print("PG"); tft.print(notePage + 1); tft.print("/5");
+  tft.setCursor(120, 3); tft.print("[*]");
+  tft.fillRoundRect(2, 14, 156, 18, 3, 0x0220);
+  tft.drawRoundRect(2, 14, 156, 18, 3, DGREEN);
+  tft.setTextColor(COL_TEXT); tft.setTextSize(1);
+  String disp = noteText;
+  if (disp.length() > 24) disp = disp.substring(disp.length() - 24);
+  tft.setCursor(5, 19);
+  if (disp.length() == 0) { tft.setTextColor(COL_DIM); tft.print("(type text...)"); }
+  else tft.print(disp);
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      const char* label = notePages[notePage][r][c];
+      drawCalcButton(r, c, label, (r == noteCurR && c == noteCurC));
+    }
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(2, 118);
+  tft.print("[2/4/6/8]nav [5]add [#]pg [B]del [C]clr");
+}
+
+void app_notes() {
+  if (bannerActive) return;
+  bool redraw = clearOnce;
+  if (clearOnce) { noteCurR = 0; noteCurC = 0; clearOnce = false; }
+  if (key == '2') { if (noteCurR > 0) noteCurR--; else noteCurR = 3; click(); redraw = true; }
+  if (key == '8') { if (noteCurR < 3) noteCurR++; else noteCurR = 0; click(); redraw = true; }
+  if (key == '4') { if (noteCurC > 0) noteCurC--; else noteCurC = 3; click(); redraw = true; }
+  if (key == '6') { if (noteCurC < 3) noteCurC++; else noteCurC = 0; click(); redraw = true; }
+  if (key == '5') {
+    click();
+    const char* sym = notePages[notePage][noteCurR][noteCurC];
+    if (noteText.length() < 80) { noteText += sym; espTone(1500, 20); }
+    redraw = true;
+  }
+  if (key == 'C') { noteText = ""; click(); redraw = true; }
+  if (key == '#') { notePage = (notePage + 1) % 5; click(); redraw = true; }
+  if (key == 'B') {
+    if (noteText.length() > 0) noteText.remove(noteText.length() - 1);
+    click(); redraw = true;
+  }
+  if (redraw) drawNotesScreen();
+}
+
+void initFB() {
+  fbBirdY = 55;
+  fbBirdVY = 0;
+  fbDead = false;
+  fbStarted = false;
+  fbScore = 0;
+  fbPipeSpeed = 2;
+  fbLastUpdate = millis();
+  fbBgOffset = 0;
+  for (int i = 0; i < 4; i++) {
+    fbPipesX[i] = 160 + i * 55;
+    fbPipesGapY[i] = random(30, 70);
+    fbPipeScored[i] = false;
+  }
+  for (int i = 0; i < 8; i++) {
+    fbStarX[i] = random(0, 160);
+    fbStarY[i] = random(14, 80);
+  }
+}
+
+void drawFB() {
+  tft.fillScreen(SKY);
+  tft.fillRect(0, 12, 160, FB_GROUND_Y - 12, DSKY);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3); tft.print("FLAPPY");
+  tft.setCursor(110, 3); tft.print("S:"); tft.print(fbScore);
+  tft.setCursor(135, 3); tft.print("H:"); tft.print(fbHighScore);
+  for (int i = 0; i < 8; i++) {
+    int sx = (fbStarX[i] + fbBgOffset) % 160;
+    tft.fillCircle(sx, fbStarY[i], 1, WHITE);
+  }
+  for (int i = 0; i < 4; i++) {
+    int px = fbPipesX[i];
+    if (px < -FB_PIPE_W || px > 160) continue;
+    int gapTop = fbPipesGapY[i] - FB_PIPE_GAP / 2;
+    int gapBot = fbPipesGapY[i] + FB_PIPE_GAP / 2;
+    tft.fillRect(px, FB_TOP_Y, FB_PIPE_W, gapTop - FB_TOP_Y, GREEN);
+    tft.fillRect(px - 1, gapTop - 4, FB_PIPE_W + 2, 4, DGREEN);
+    tft.drawRect(px, FB_TOP_Y, FB_PIPE_W, gapTop - FB_TOP_Y, DGREEN);
+    tft.fillRect(px, gapBot, FB_PIPE_W, FB_GROUND_Y - gapBot, GREEN);
+    tft.fillRect(px - 1, gapBot, FB_PIPE_W + 2, 4, DGREEN);
+    tft.drawRect(px, gapBot, FB_PIPE_W, FB_GROUND_Y - gapBot, DGREEN);
+  }
+  tft.fillRect(0, FB_GROUND_Y, 160, 128 - FB_GROUND_Y, DGREEN);
+  tft.drawFastHLine(0, FB_GROUND_Y, 160, GREEN);
+  for (int x = 0; x < 160; x += 6) {
+    tft.drawFastVLine(x, FB_GROUND_Y + 2, 3, 0x0260);
+  }
+  int bx = FB_BIRD_X, by = (int)fbBirdY;
+  uint16_t bodyColor = fbDead ? RED : YEL;
+  tft.fillCircle(bx, by, 5, bodyColor);
+  tft.drawCircle(bx, by, 5, ORANGE);
+  int wingY = by + (fbWingPhase ? -2 : 2);
+  tft.fillCircle(bx - 2, wingY, 3, ORANGE);
+  tft.fillCircle(bx + 2, by - 2, 1, BLACK);
+  tft.fillTriangle(bx + 5, by - 1, bx + 8, by, bx + 5, by + 1, RED);
+  if (!fbStarted && !fbDead) {
+    tft.fillRoundRect(25, 40, 110, 36, 5, BLACK);
+    tft.drawRoundRect(25, 40, 110, 36, 5, GREEN);
+    tft.setTextColor(GREEN); tft.setTextSize(1);
+    tft.setCursor(35, 48); tft.print("GET READY!");
+    tft.setCursor(38, 62); tft.print("[5] to flap");
+  }
+  if (fbDead) {
+    tft.fillRoundRect(25, 38, 110, 50, 5, BLACK);
+    tft.drawRoundRect(25, 38, 110, 50, 5, RED);
+    tft.setTextColor(RED); tft.setTextSize(2);
+    tft.setCursor(40, 44); tft.print("CRASH");
+    tft.setTextSize(1); tft.setTextColor(WHITE);
+    tft.setCursor(35, 64); tft.print("Score: "); tft.print(fbScore);
+    tft.setCursor(35, 74); tft.print("Best: "); tft.print(fbHighScore);
+    tft.setTextColor(GREEN); tft.setCursor(50, 84); tft.print("[5] retry");
+  }
+  tft.setTextColor(COL_DIM); tft.setTextSize(1);
+  tft.setCursor(2, 125); tft.print("[5] flap  [*] exit");
+}
+
+bool processFB() {
+  if (fbDead) {
+    if (key == '5') { initFB(); return true; }
+    return false;
+  }
+  if (millis() - fbLastUpdate < 33) return false;
+  fbLastUpdate = millis();
+  if (!fbStarted) {
+    if (key == '5') { fbStarted = true; fbBirdVY = FB_FLAP; espTone(1200, 30); }
+    else {
+      fbBirdY = 55 + sin(millis() / 200.0) * 4;
+      fbBgOffset = (fbBgOffset + 1) % 160;
+      if (millis() - fbWingTimer > 200) { fbWingTimer = millis(); fbWingPhase = !fbWingPhase; }
+      return true;
+    }
+  }
+  if (key == '5') { fbBirdVY = FB_FLAP; espTone(1200, 30); }
+  fbBirdVY += FB_GRAVITY;
+  fbBirdY += fbBirdVY;
+  if (fbBirdY < FB_TOP_Y + 2) { fbBirdY = FB_TOP_Y + 2; fbBirdVY = 0; }
+  if (fbBirdY + 5 >= FB_GROUND_Y) {
+    fbBirdY = FB_GROUND_Y - 5;
+    fbDead = true;
+    if (fbScore > fbHighScore) fbHighScore = fbScore;
+    espTone(200, 300);
+    return true;
+  }
+  if (millis() - fbWingTimer > 150) { fbWingTimer = millis(); fbWingPhase = !fbWingPhase; }
+  for (int i = 0; i < 4; i++) {
+    fbPipesX[i] -= fbPipeSpeed;
+    if (fbPipesX[i] < -FB_PIPE_W) {
+      fbPipesX[i] = 160;
+      fbPipesGapY[i] = random(28, 76);
+      fbPipeScored[i] = false;
+    }
+    if (!fbPipeScored[i] && fbPipesX[i] + FB_PIPE_W < FB_BIRD_X) {
+      fbPipeScored[i] = true;
+      fbScore++;
+      espTone(2000, 40);
+    }
+    int px = fbPipesX[i];
+    int gapTop = fbPipesGapY[i] - FB_PIPE_GAP / 2;
+    int gapBot = fbPipesGapY[i] + FB_PIPE_GAP / 2;
+    if (px + FB_PIPE_W > FB_BIRD_X - 4 && px < FB_BIRD_X + 4) {
+      if (fbBirdY - 5 < gapTop || fbBirdY + 5 > gapBot) {
+        fbDead = true;
+        if (fbScore > fbHighScore) fbHighScore = fbScore;
+        espTone(200, 300);
+        return true;
+      }
+    }
+  }
+  fbBgOffset = (fbBgOffset + fbPipeSpeed) % 160;
+  if (fbScore > 0 && fbScore % 5 == 0 && fbPipeSpeed < 4) {
+    if (fbScore == 5) fbPipeSpeed = 3;
+    if (fbScore == 15) fbPipeSpeed = 4;
+  }
+  return true;
+}
+
+void app_flappy() {
+  if (bannerActive) return;
+  if (clearOnce) { initFB(); drawFB(); clearOnce = false; return; }
+  if (processFB()) drawFB();
+}
+
+void drawMenu() {
+  tft.fillScreen(BLACK);
+  tft.fillRect(0, 0, 160, 12, COL_HEADER);
+  tft.setTextColor(BLACK); tft.setTextSize(1);
+  tft.setCursor(4, 3);
+  tft.print(menuPage == 0 ? "HACK CONSOLE" : "GAMES");
+  tft.setCursor(80, 3);
+  tft.print(menuPage == 0 ? "1/2" : "2/2");
+  tft.setCursor(110, 3); tft.print(getTimeStr());
+  if (menuPage == 0) {
+    const char* labels[] = {"Radar","Wi-Fi","Scan","Hack","Term","IPs","Console","Matrix","Gallery","Theme"};
+    for (int i = 0; i < NUM_APPS; i++) {
+      int col = i % 3, row = i / 3;
+      int ix = col * 53 + 15, iy = 14 + row * 38 + 2;
+      drawAppIcon(i, ix, iy, i == sel);
+      tft.setTextColor(i == sel ? COL_TEXT : COL_DIM);
+      tft.setTextSize(1);
+      int labelW = strlen(labels[i]) * 6;
+      int lx = col * 53 + (53 - labelW) / 2;
+      tft.setCursor(lx, iy + 26);
+      tft.print(labels[i]);
+    }
+    tft.setTextColor(COL_DIM); tft.setTextSize(1);
+    tft.setCursor(108, 118); tft.print("[D] lock");
+  } else {
+    const char* labels[] = {"LOCK","CODE","SNAKE","REACT","DICE","SIMON","CALC","FLAPPY","NOTES"};
+    int iconIds[] = {10, 11, 12, 13, 14, 15, 16, 17, 18};
+    int positions[][2] = {
+      {15,14},{68,14},{121,14},
+      {15,50},{68,50},{121,50},
+      {15,86},{68,86},{121,86}
+    };
+    for (int i = 0; i < 9; i++) {
+      drawAppIcon(iconIds[i], positions[i][0], positions[i][1], i == sel);
+      tft.setTextColor(i == sel ? COL_TEXT : COL_DIM);
+      tft.setTextSize(1);
+      int labelW = strlen(labels[i]) * 6;
+      tft.setCursor(positions[i][0] + 12 - labelW / 2, positions[i][1] + 26);
+      tft.print(labels[i]);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(1);
+  setenv("TZ", "MSK-3", 1);
+  tzset();
+  setTheme(THEME_BLACK);
+  for (int i = 0; i < 5; i++)
+    for (int j = 0; j < IMG_PIX; j++)
+      imgBuf[i][j] = 0;
+  randomSeed(analogRead(0));
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apSSID, apPass);
+  server.on("/", handleRoot);
+  server.on("/draw", handleDraw);
+  server.on("/contact", handleContact);
+  server.on("/send", HTTP_POST, handleSend);
+  server.on("/settime", HTTP_GET, handleSetTime);
+  server.on("/setcolor", HTTP_GET, handleSetColor);
+  server.on("/uploadimg", HTTP_POST, handleUploadImg);
+  server.begin();
+  Serial.print("Web IP: "); Serial.println(WiFi.softAPIP());
+  md = 0; pinInput = ""; pinWrong = false;
+  lockAnimTimer = millis(); lockAnimPhase = 0;
+  clearOnce = true;
+}
+
+void loop() {
+  server.handleClient();
+  char k = kp.getKey();
+  if (k != NO_KEY) { key = k; click(); }
+
+  if (md == 0) {
+    if (millis() - lockAnimTimer > 500) {
+      lockAnimTimer = millis();
+      lockAnimPhase = (lockAnimPhase + 1) % 2;
+      drawLockScreen();
+    }
+    if (clearOnce) { drawLockScreen(); clearOnce = false; }
+    if (pinWrong && millis() - wrongTimer > 1200) {
+      pinWrong = false; pinInput = ""; drawLockScreen();
+    }
+    if (key >= '0' && key <= '9') {
+      if (pinInput.length() < 4 && !pinWrong) {
+        pinInput += key; drawLockScreen(); espTone(1500, 30);
+      }
+    }
+    if (key == '*') { pinInput = ""; pinWrong = false; drawLockScreen(); }
+    if (key == '#') {
+      if (pinInput == LOCK_PIN) {
+        md = 1; clearOnce = true; drawMenu(); espTone(2000, 100);
+      } else {
+        pinWrong = true; wrongTimer = millis();
+        drawLockScreen(); espTone(200, 200);
+      }
+    }
+  } else if (md == 1) {
+    if (key == 'A' && menuPage == 0) { md = 11; clearOnce = true; }
+    if (key == 'D' && menuPage == 0) {
+      md = 0; pinInput = ""; pinWrong = false;
+      lockAnimTimer = millis(); lockAnimPhase = 0; clearOnce = true;
+    }
+    if (menuPage == 0) {
+      if (key == '2') { if (sel >= 3) sel -= 3; else sel += 6; drawMenu(); }
+      if (key == '8') {
+        if (sel < 6) { sel += 3; drawMenu(); }
+        else { menuPage = 1; sel = 0; drawMenu(); }
+      }
+      if (key == '4') { if (sel % 3 > 0) sel--; else sel += 2; drawMenu(); }
+      if (key == '6') { if (sel % 3 < 2) sel++; else sel -= 2; drawMenu(); }
+      if (key == '5') {
+        if (sel == 9) { md = 11; clearOnce = true; }
+        else { md = 2 + sel; clearOnce = true; }
+      }
+    } else {
+      if (key == '2') {
+        if (sel >= 3) { sel -= 3; drawMenu(); }
+        else { menuPage = 0; sel = 6; drawMenu(); }
+      }
+      if (key == '8') {
+        if (sel < 6) { sel += 3; drawMenu(); }
+        else { menuPage = 0; sel = 0; drawMenu(); }
+      }
+      if (key == '4') { if (sel > 0) sel--; else sel = 8; drawMenu(); }
+      if (key == '6') { if (sel < 8) sel++; else sel = 0; drawMenu(); }
+      if (key == '5') {
+        if (sel == 0) { md = 13; clearOnce = true; lockLevel = 1; initLock(); }
+        else if (sel == 1) { md = 14; clearOnce = true; crackLevel = 1; initCrack(); }
+        else if (sel == 2) { md = 15; clearOnce = true; initSnake(); }
+        else if (sel == 3) { md = 16; clearOnce = true; initReact(); }
+        else if (sel == 4) { md = 17; clearOnce = true; diceVal[0]=1; diceVal[1]=1; }
+        else if (sel == 5) { md = 18; clearOnce = true; initSimon(); }
+        else if (sel == 6) { md = 19; clearOnce = true; }
+        else if (sel == 7) { md = 20; clearOnce = true; }
+        else if (sel == 8) { md = 21; clearOnce = true; }
+      }
+    }
+  } else if (md == 11) {
+    if (key == '*') { md = 1; drawMenu(); }
+    else { app_theme(); }
+  } else {
+    if (key == '*') { md = 1; drawMenu(); }
+    else {
+      switch (md) {
+        case 2:  app_radar();   break;
+        case 3:  app_ap();      break;
+        case 4:  app_scan();    break;
+        case 5:  app_hack();    break;
+        case 6:  app_term();    break;
+        case 7:  app_capture(); break;
+        case 8:  app_console(); break;
+        case 9:  app_matrix();  break;
+        case 10: app_gallery(); break;
+        case 13: app_lockpick(); break;
+        case 14: app_crack();    break;
+        case 15: app_snake();    break;
+        case 16: app_react();    break;
+        case 17: app_dice();     break;
+        case 18: app_simon();    break;
+        case 19: app_calc();     break;
+        case 20: app_flappy();   break;
+        case 21: app_notes();    break;
+      }
+    }
+  }
+
+  if (bannerActive) {
+    if (millis() >= ipBannerUntil) {
+      bannerActive = false; clearOnce = true;
+      if (md == 1) drawMenu();
+      else if (md == 0) drawLockScreen();
+    }
+  }
+
+  static unsigned long lastTimeUpdate = 0;
+  if (millis() - lastTimeUpdate > 1000) {
+    lastTimeUpdate = millis();
+    if (md == 1) {
+      tft.fillRect(76, 0, 84, 12, COL_HEADER);
+      tft.setTextColor(BLACK); tft.setTextSize(1);
+      tft.setCursor(80, 3);
+      tft.print(menuPage == 0 ? "1/2" : "2/2");
+      tft.setCursor(110, 3); tft.print(getTimeStr());
+    } else if (md == 0 && !pinWrong) {
+      tft.fillRect(60, 0, 50, 10, BLACK);
+      tft.setTextColor(COL_HEADER); tft.setTextSize(1);
+      String t = getTimeStr();
+      int tw = t.length() * 6;
+      tft.setCursor(80 - tw / 2, 2); tft.print(t);
+    }
+  }
+
+  key = 0;
+
+  if (bannerActive && millis() < ipBannerUntil) {
+    tft.fillRect(0, 0, 160, 16, COL_BANNER);
+    tft.setTextColor(BLACK); tft.setTextSize(1);
+    tft.setCursor(4, 4);
+    tft.print(bannerText.substring(0, 20));
+  }
+}
